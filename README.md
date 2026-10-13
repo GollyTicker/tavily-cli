@@ -305,6 +305,8 @@ tvly
 ├── crawl <url>                 # Crawl a website
 ├── map <url>                   # Discover URLs (no content)
 ├── update                      # Check for or install CLI updates
+├── set-default                 # Disable built-in web search in Claude Code/Codex
+├── unset-default               # Restore built-in web search in Claude Code/Codex
 ├── research <query>            # Deep research (async)
 │   ├── run <query>             # Start a research task (same as above)
 │   ├── status <id>             # Check task status
@@ -515,6 +517,25 @@ Requires `--session-id` or `--request-id`. Requires a Tavily API key.
 | `--urls-scores` | Per-result feedback: JSON array of `{id\|url, agent_score, scores, comment}`, inline or a file path |
 | `--extra-scores` | Additional labeled scores: JSON array of `{label, value}`, inline or a file path |
 | `--client-name` | Set optional `client_name` for request attribution |
+
+### `tvly set-default` / `tvly unset-default`
+
+Make Tavily the default web tool for your coding agents by disabling their
+built-in web search. Without flags, you are prompted for each agent.
+`unset-default` undoes `set-default`, but doesn't restore values you had set
+yourself for these settings before running it.
+
+| Option | Description |
+|--------|-------------|
+| `--claude` | Add `WebSearch` and `WebFetch` to `permissions.deny` in `~/.claude/settings.json` (or `$CLAUDE_CONFIG_DIR`) |
+| `--codex` | Set `web_search = "disabled"` in `~/.codex/config.toml` (or `$CODEX_HOME`) |
+| `--project` | Apply to the current directory instead: `.claude/settings.local.json` and `.codex/config.toml` (Codex reads project config only in trusted projects) |
+
+```bash
+tvly set-default --claude --codex
+tvly unset-default --codex
+tvly set-default --claude --project
+```
 
 ## Environment Variables
 
