@@ -22,12 +22,17 @@ _TOML_WEB_SEARCH = re.compile(r"^\s*web_search\s*=")
 _TOML_WEB_SEARCH_DISABLED = re.compile(r"""^\s*web_search\s*=\s*["']disabled["']\s*(#.*)?$""")
 
 
-def claude_settings_path() -> Path:
+def claude_settings_path(project: bool = False) -> Path:
+    if project:
+        # Personal project settings; Claude Code gitignores this file automatically.
+        return Path.cwd() / ".claude" / "settings.local.json"
     root = Path(os.environ.get("CLAUDE_CONFIG_DIR", Path.home() / ".claude")).expanduser()
     return root / "settings.json"
 
 
-def codex_config_path() -> Path:
+def codex_config_path(project: bool = False) -> Path:
+    if project:
+        return Path.cwd() / ".codex" / "config.toml"
     root = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex")).expanduser()
     return root / "config.toml"
 
@@ -147,20 +152,20 @@ def unset_codex_default(path: Path) -> bool:
 # ── Commands ─────────────────────────────────────────────────────────
 
 
-_TARGETS: dict[str, tuple[str, Callable[[], Path]]] = {
+_TARGETS: dict[str, tuple[str, Callable[[bool], Path]]] = {
     "claude": ("Claude Code", claude_settings_path),
     "codex": ("Codex", codex_config_path),
 }
 
 
-def _select_targets(claude: bool, codex: bool, verb: str, json_output: bool) -> list[str]:
+def _select_targets(claude: bool, codex: bool, verb: str, project: bool, json_output: bool) -> list[str]:
     if claude or codex:
         return [name for name, flag in (("claude", claude), ("codex", codex)) if flag]
     if json_output or not sys.stdin.isatty():
         raise click.UsageError("Pass --claude and/or --codex in non-interactive runs.")
     return [
         name for name, (label, _) in _TARGETS.items()
-        if click.confirm(f"{verb} for {label}?", default=True)
+        if click.confirm(f"{verb} for {label}{' in this project' if project else ''}?", default=True)
     ]
 
 
@@ -168,6 +173,8 @@ def _run(
     targets: list[str],
     actions: dict[str, Callable[[Path], bool]],
     *,
+    project: bool,
+    codex_note: str | None = None,
     changed_message: str,
     unchanged_message: str,
     json_output: bool,
@@ -175,9 +182,15 @@ def _run(
     results = []
     for name in targets:
         label, path_fn = _TARGETS[name]
-        path = path_fn()
+        path = path_fn(project)
         changed = actions[name](path)
-        results.append({"agent": name, "label": label, "path": str(path), "changed": changed})
+        results.append({
+            "agent": name,
+            "label": label,
+            "scope": "project" if project else "global",
+            "path": str(path),
+            "changed": changed,
+        })
 
     if json_output:
         click.echo(json.dumps({"ok": True, "results": results}, sort_keys=True))
@@ -194,18 +207,27 @@ def _run(
         console.print(f"  {mark} {result['label']}: {message} [dim]({result['path']})[/dim]")
     if any(result["changed"] for result in results):
         console.print("  [dim]Restart the agent for the change to take effect.[/dim]")
+    if codex_note and any(result["agent"] == "codex" and result["changed"] for result in results):
+        console.print(f"  [dim]{codex_note}[/dim]")
 
 
 @click.command("set-default")
 @click.option("--claude", is_flag=True, help="Deny Claude Code's built-in WebSearch and WebFetch tools.")
 @click.option("--codex", is_flag=True, help="Disable Codex's built-in web search.")
+@click.option(
+    "--project",
+    is_flag=True,
+    help="Apply to the current project (.claude/settings.local.json, .codex/config.toml) instead of globally.",
+)
 @json_option
-def set_default(claude: bool, codex: bool, json_output: bool) -> None:
+def set_default(claude: bool, codex: bool, project: bool, json_output: bool) -> None:
     """Make Tavily the default web tool by disabling agents' built-in web search."""
-    targets = _select_targets(claude, codex, "Make Tavily the default web tool", json_output)
+    targets = _select_targets(claude, codex, "Make Tavily the default web tool", project, json_output)
     _run(
         targets,
         {"claude": set_claude_default, "codex": set_codex_default},
+        project=project,
+        codex_note="Codex only reads project config in projects you have marked as trusted." if project else None,
         changed_message="built-in web search disabled",
         unchanged_message="built-in web search already disabled",
         json_output=json_output,
@@ -215,13 +237,19 @@ def set_default(claude: bool, codex: bool, json_output: bool) -> None:
 @click.command("unset-default")
 @click.option("--claude", is_flag=True, help="Re-allow Claude Code's built-in WebSearch and WebFetch tools.")
 @click.option("--codex", is_flag=True, help="Re-enable Codex's built-in web search.")
+@click.option(
+    "--project",
+    is_flag=True,
+    help="Undo in the current project (.claude/settings.local.json, .codex/config.toml) instead of globally.",
+)
 @json_option
-def unset_default(claude: bool, codex: bool, json_output: bool) -> None:
+def unset_default(claude: bool, codex: bool, project: bool, json_output: bool) -> None:
     """Undo set-default and restore agents' built-in web search."""
-    targets = _select_targets(claude, codex, "Restore built-in web search", json_output)
+    targets = _select_targets(claude, codex, "Restore built-in web search", project, json_output)
     _run(
         targets,
         {"claude": unset_claude_default, "codex": unset_codex_default},
+        project=project,
         changed_message="built-in web search restored",
         unchanged_message="nothing to undo",
         json_output=json_output,

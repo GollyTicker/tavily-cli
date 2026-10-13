@@ -113,3 +113,29 @@ def test_no_flags_non_interactive_is_usage_error(homes: tuple[Path, Path]) -> No
 
     assert result.exit_code == 2
     assert "--claude" in result.output
+
+
+def test_project_scope_writes_to_cwd(
+    homes: tuple[Path, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    global_claude, global_codex = homes
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.chdir(project)
+
+    result = CliRunner().invoke(cli, ["set-default", "--claude", "--codex", "--project", "--json"])
+
+    assert result.exit_code == 0, result.output
+    claude = project / ".claude" / "settings.local.json"
+    codex = project / ".codex" / "config.toml"
+    assert json.loads(claude.read_text()) == {"permissions": {"deny": ["WebSearch", "WebFetch"]}}
+    assert codex.read_text() == 'web_search = "disabled"\n'
+    assert not global_claude.exists()
+    assert not global_codex.exists()
+    assert {r["scope"] for r in json.loads(result.output)["results"]} == {"project"}
+
+    result = CliRunner().invoke(cli, ["unset-default", "--claude", "--codex", "--project"])
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(claude.read_text()) == {}
+    assert codex.read_text() == ""

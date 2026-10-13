@@ -529,10 +529,12 @@ yourself for these settings before running it.
 |--------|-------------|
 | `--claude` | Add `WebSearch` and `WebFetch` to `permissions.deny` in `~/.claude/settings.json` (or `$CLAUDE_CONFIG_DIR`) |
 | `--codex` | Set `web_search = "disabled"` in `~/.codex/config.toml` (or `$CODEX_HOME`) |
+| `--project` | Apply to the current directory instead: `.claude/settings.local.json` and `.codex/config.toml` (Codex reads project config only in trusted projects) |
 
 ```bash
 tvly set-default --claude --codex
 tvly unset-default --codex
+tvly set-default --claude --project
 ```
 
 ## Environment Variables
