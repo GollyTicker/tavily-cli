@@ -13,10 +13,11 @@ import click
 from tavily_cli import __version__
 from tavily_cli.common import json_option
 from tavily_cli.init_skills import (
+    SKILLS_REPO,
     SKILLS_SOURCE,
     agent_specs,
     detect_agents,
-    install_skills,
+    install_agent_skills,
     verify_skills,
 )
 
@@ -73,8 +74,10 @@ def init_command(
 
     if not skip_skills:
         try:
-            skills_result = install_skills(selected_agents)
+            skills_result = install_agent_skills(selected_agents)
             result["skills"].update({
+                "installer": skills_result.installer,
+                "source": SKILLS_REPO if skills_result.installer == "npx" else SKILLS_SOURCE,
                 "installed": skills_result.installed,
                 "updated": skills_result.updated,
                 "unchanged": skills_result.unchanged,
@@ -192,6 +195,7 @@ def _empty_result(agents: tuple[str, ...]) -> dict[str, Any]:
         "mode": "unknown",
         "auth": {"authenticated": False, "method": "none"},
         "skills": {
+            "installer": None,
             "source": SKILLS_SOURCE,
             "agents": list(agents),
             "installed": 0,

@@ -88,7 +88,10 @@ tvly search "latest AI trends"
 2. **Agent setup:** detect Claude Code, Codex, and Cursor and install Tavily's eight core agent skills.
 3. **Verification:** check the CLI and installed skills, then run a live search.
 
-No Node.js is required. Restart your agent after new skills are installed.
+When Node.js is available, skills are installed with the
+[skills.sh CLI](https://skills.sh) (`npx skills add tavily-ai/skills`). Without
+Node.js, `tvly init` installs the skills pinned to your CLI release instead.
+Restart your agent after new skills are installed.
 
 ```bash
 # Set up one or more supported agents
@@ -108,11 +111,12 @@ tvly init --skip-auth
 tvly init --skip-skills
 ```
 
-Skills are installed in `~/.agents/skills` and exposed to the selected agents.
-If no supported agent is detected, setup still installs the shared skills.
-Rerunning `tvly init` checks existing skills and installs the version selected
-by your CLI release. Use `tvly update` followed by `tvly init` to get the
-skills shipped with a newer release.
+Skills are installed in `~/.agents/skills`, which Codex and Cursor load
+directly; Claude Code gets links in `~/.claude/skills`. If no supported agent
+is detected, setup still installs the shared skills.
+Rerunning `tvly init` updates existing skills to the latest published version
+(or, without Node.js, to the version pinned by your CLI release). You can also
+run `npx skills update` at any time.
 
 ### Try search and extract without signing in
 
@@ -371,8 +375,8 @@ tvly --status --json   # structured status
 
 ### `tvly init`
 
-Run first-time setup, install or update the Tavily skills selected by your
-CLI release, and verify the CLI with a live search.
+Run first-time setup, install or update the Tavily skills (through
+`npx skills` when Node.js is available), and verify the CLI with a live search.
 
 | Option | Description |
 |--------|-------------|

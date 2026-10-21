@@ -1,4 +1,9 @@
-"""Install Tavily's maintained agent skills without requiring Node.js."""
+"""Install Tavily's maintained agent skills.
+
+The skills.sh CLI (``npx skills``) is preferred when Node.js is available, so
+installs track the latest skills and are counted on skills.sh. The pinned,
+checksum-verified archive is the fallback for machines without Node.js.
+"""
 
 from __future__ import annotations
 
@@ -6,6 +11,7 @@ import hashlib
 import io
 import os
 import shutil
+import subprocess
 import tarfile
 import tempfile
 from dataclasses import dataclass
@@ -14,10 +20,13 @@ from uuid import uuid4
 
 import httpx
 
-SKILLS_COMMIT = "ea5e8201b0d3ed9c10b70b71187589bd761fe2d2"
-SKILLS_ARCHIVE_SHA256 = "a6d304afa7f4274dd307fb02917fd04d23771610fb828f2a7463d5745eccf804"
-SKILLS_SOURCE = f"tavily-ai/skills@{SKILLS_COMMIT}"
-SKILLS_ARCHIVE_URL = f"https://codeload.github.com/tavily-ai/skills/tar.gz/{SKILLS_COMMIT}"
+SKILLS_REPO = "tavily-ai/skills"
+SKILLS_COMMIT = "778122e5f9c680f541eeceda5a5b36405eb7980c"
+SKILLS_ARCHIVE_SHA256 = "c6d426ef1bb364d3538967d9fe24be4a248ff3ce9b984439f948b6dcf27383f0"
+SKILLS_SOURCE = f"{SKILLS_REPO}@{SKILLS_COMMIT}"
+SKILLS_ARCHIVE_URL = f"https://codeload.github.com/{SKILLS_REPO}/tar.gz/{SKILLS_COMMIT}"
+# Exact version: npx runs whatever this resolves to with the user's permissions.
+NPX_SKILLS_PACKAGE = "skills@1.7.4"
 CORE_SKILLS = (
     "tavily-best-practices",
     "tavily-cli",
@@ -31,12 +40,15 @@ CORE_SKILLS = (
 
 _MAX_ARCHIVE_BYTES = 25 * 1024 * 1024
 _MAX_FILE_BYTES = 5 * 1024 * 1024
+_NPX_TIMEOUT_SECONDS = 300
 
 
 @dataclass(frozen=True)
 class AgentSpec:
     marker: Path
     skills_dir: Path
+    # Agents that load ``~/.agents/skills`` directly need no per-agent link.
+    reads_shared_dir: bool = False
 
 
 @dataclass(frozen=True)
@@ -47,6 +59,7 @@ class SkillsInstallResult:
     unchanged: int
     linked: int
     restart_required: bool
+    installer: str = "archive"
 
     @property
     def total(self) -> int:
@@ -64,9 +77,15 @@ def agent_specs(home: Path | None = None) -> dict[str, AgentSpec]:
         codex_root = root / ".codex"
     return {
         "claude-code": AgentSpec(claude_root, claude_root / "skills"),
-        "codex": AgentSpec(codex_root, codex_root / "skills"),
-        "cursor": AgentSpec(root / ".cursor", root / ".cursor" / "skills"),
+        "codex": AgentSpec(codex_root, codex_root / "skills", reads_shared_dir=True),
+        "cursor": AgentSpec(root / ".cursor", root / ".cursor" / "skills", reads_shared_dir=True),
     }
+
+
+def _linked_skill_dirs(agents: tuple[str, ...], home: Path | None = None) -> tuple[Path, ...]:
+    """Skill directories that need a link because the agent does not read ``~/.agents/skills``."""
+    specs = agent_specs(home)
+    return tuple(specs[name].skills_dir for name in agents if not specs[name].reads_shared_dir)
 
 
 def detect_agents(home: Path | None = None) -> tuple[str, ...]:
@@ -97,13 +116,72 @@ def download_skills_archive(*, client: httpx.Client | None = None) -> bytes:
             http.close()
 
 
+def install_agent_skills(agents: tuple[str, ...]) -> SkillsInstallResult:
+    """Install skills with ``npx skills`` when possible, else from the pinned archive."""
+    npx = shutil.which("npx")
+    if npx and agents:
+        result = _install_with_npx(npx, agents)
+        if result is not None:
+            return result
+    return install_skills(agents)
+
+
+def _install_with_npx(npx: str, agents: tuple[str, ...]) -> SkillsInstallResult | None:
+    """Run the skills.sh CLI non-interactively; return None so the caller can fall back."""
+    shared_root = Path.home() / ".agents" / "skills"
+    link_dirs = _linked_skill_dirs(agents)
+    before = _snapshot_skills(shared_root)
+    existing_links = {d / name for d in link_dirs for name in CORE_SKILLS if (d / name).exists()}
+
+    # Keep every argument free of quotes and spaces: on Windows npx is a .cmd
+    # shim, so the command line is re-parsed by cmd.exe.
+    command = [
+        npx, "--yes", NPX_SKILLS_PACKAGE, "add", SKILLS_REPO,
+        "--skill", "*", "--global", "--agent", *agents, "--yes",
+    ]
+    try:
+        completed = subprocess.run(
+            command,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=_NPX_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if completed.returncode != 0 or not verify_skills(agents):
+        return None
+
+    after = _snapshot_skills(shared_root)
+    installed = sum(1 for name in CORE_SKILLS if before[name] is None)
+    updated = sum(1 for name in CORE_SKILLS if before[name] is not None and before[name] != after[name])
+    linked = sum(1 for d in link_dirs for name in CORE_SKILLS if d / name not in existing_links)
+    return SkillsInstallResult(
+        agents=agents,
+        installed=installed,
+        updated=updated,
+        unchanged=len(CORE_SKILLS) - installed - updated,
+        linked=linked,
+        restart_required=installed > 0 or updated > 0 or linked > 0,
+        installer="npx",
+    )
+
+
+def _snapshot_skills(shared_root: Path) -> dict[str, str | None]:
+    return {
+        name: _directory_digest(shared_root / name) if (shared_root / name).is_dir() else None
+        for name in CORE_SKILLS
+    }
+
+
 def install_skills(
     agents: tuple[str, ...],
     *,
     home: Path | None = None,
     archive: bytes | None = None,
 ) -> SkillsInstallResult:
-    """Install the eight core skills and expose them to selected agents.
+    """Install the eight core skills from the pinned archive and expose them to selected agents.
 
     Archive scripts and references are copied as files but are never executed.
     Only the exact Tavily skill names in ``CORE_SKILLS`` are managed.
@@ -126,7 +204,7 @@ def install_skills(
     with tempfile.TemporaryDirectory(prefix="tavily-skills-") as temp_dir:
         extracted_root = Path(temp_dir)
         _extract_core_skills(archive_data, extracted_root)
-        _preflight_install(shared_root, agents, specs)
+        _preflight_install(shared_root, _linked_skill_dirs(agents, home))
 
         for skill_name in CORE_SKILLS:
             source = extracted_root / skill_name
@@ -139,8 +217,7 @@ def install_skills(
             else:
                 unchanged += 1
 
-        for agent_name in agents:
-            skills_dir = specs[agent_name].skills_dir
+        for skills_dir in _linked_skill_dirs(agents, home):
             skills_dir.mkdir(parents=True, exist_ok=True)
             for skill_name in CORE_SKILLS:
                 if _expose_skill(shared_root / skill_name, skills_dir / skill_name):
@@ -158,21 +235,14 @@ def install_skills(
 
 
 def verify_skills(agents: tuple[str, ...], *, home: Path | None = None) -> bool:
-    """Verify shared skill files and selected agent entries are present."""
+    """Verify shared skill files and the links for agents that need them are present."""
     root = home or Path.home()
     specs = agent_specs(home)
+    if any(name not in specs for name in agents):
+        return False
     shared_root = root / ".agents" / "skills"
-    for skill_name in CORE_SKILLS:
-        if not (shared_root / skill_name / "SKILL.md").is_file():
-            return False
-    for agent_name in agents:
-        spec = specs.get(agent_name)
-        if spec is None:
-            return False
-        for skill_name in CORE_SKILLS:
-            if not (spec.skills_dir / skill_name / "SKILL.md").is_file():
-                return False
-    return True
+    skill_dirs = (shared_root, *_linked_skill_dirs(agents, home))
+    return all((d / skill_name / "SKILL.md").is_file() for d in skill_dirs for skill_name in CORE_SKILLS)
 
 
 def _extract_core_skills(archive_data: bytes, destination: Path) -> None:
@@ -293,7 +363,7 @@ def _expose_skill(source: Path, destination: Path) -> bool:
     return True
 
 
-def _preflight_install(shared_root: Path, agents: tuple[str, ...], specs: dict[str, AgentSpec]) -> None:
+def _preflight_install(shared_root: Path, link_dirs: tuple[Path, ...]) -> None:
     """Reject path conflicts before changing any installed skill."""
     for skill_name in CORE_SKILLS:
         destination = shared_root / skill_name
@@ -302,10 +372,10 @@ def _preflight_install(shared_root: Path, agents: tuple[str, ...], specs: dict[s
         ):
             raise ValueError(f"Cannot install Tavily skill over non-directory path: {destination}")
 
-    for agent_name in agents:
+    for skills_dir in link_dirs:
         for skill_name in CORE_SKILLS:
             source = shared_root / skill_name
-            destination = specs[agent_name].skills_dir / skill_name
+            destination = skills_dir / skill_name
             if destination.is_symlink():
                 if destination.resolve(strict=False) != source.resolve(strict=False):
                     raise ValueError(f"Cannot replace existing skill link: {destination}")
